@@ -7,10 +7,12 @@
 
 #include <windows.h>
 #include <string>
+#include <vector> // ← vector を追加
 
 namespace
 {
-    bool ParseEvaluationResponse(const std::string& response, bool& ok)
+    // 内部のパース関数も、分析結果とアドバイスを受け取れるように拡張します
+    bool ParseEvaluationResponse(const std::string& response, bool& ok, std::string& detectedMovement, std::string& advice)
     {
         JsonValue root;
         if (!ParseJson(response, root, nullptr) || !root.IsObject()) {
@@ -28,8 +30,16 @@ namespace
                         const JsonValue* okValue = result.Find("ok");
                         if (okValue && okValue->IsBool()) {
                             ok = okValue->boolean;
-                            return true;
                         }
+                        const JsonValue* movementValue = result.Find("detected_movement");
+                        if (movementValue && movementValue->IsString()) {
+                            detectedMovement = movementValue->string;
+                        }
+                        const JsonValue* adviceValue = result.Find("advice");
+                        if (adviceValue && adviceValue->IsString()) {
+                            advice = adviceValue->string;
+                        }
+                        return true;
                     }
                 }
             }
@@ -46,8 +56,13 @@ bool RunMotionFeedbackLoop(const std::string& instruction,
     int maxIterations,
     int delaySeconds)
 {
+    // --- 追加：ループ内で共有する履歴と直前JSONデータ ---
+    std::vector<std::string> history;
+    std::string lastGeneratedJson;
+
     for (int iteration = 0; iteration < maxIterations; ++iteration) {
-        if (!RunMotionGeneration(instruction, endpointUrl, modelName, outputVmdPath)) {
+        // 新しい引数構成（history, lastGeneratedJson）を指定して呼び出し
+        if (!RunMotionGeneration(instruction, endpointUrl, modelName, outputVmdPath, history, lastGeneratedJson)) {
             return false;
         }
         Sleep(delaySeconds * 1000);
@@ -55,14 +70,24 @@ bool RunMotionFeedbackLoop(const std::string& instruction,
         if (latestCapture.empty()) {
             return false;
         }
-        std::string response = RequestMotionEvaluationJson(endpointUrl, modelName, instruction, latestCapture);
+
+        // 評価時にも lastGeneratedJson を引き渡す
+        std::string response = RequestMotionEvaluationJson(endpointUrl, modelName, instruction, latestCapture, lastGeneratedJson);
         if (response.empty()) {
             return false;
         }
+
         bool ok = false;
-        if (ParseEvaluationResponse(response, ok) && ok) {
-            return true;
+        std::string detectedMovement;
+        std::string advice;
+
+        if (ParseEvaluationResponse(response, ok, detectedMovement, advice) && ok) {
+            return true; // 成功したらループを抜ける
         }
+
+        // 失敗した場合は履歴を追加して次の試行へ活かす
+        std::string attemptSummary = "Attempt " + std::to_string(iteration + 1) + " resulted in: '" + detectedMovement + "'. Advice: " + advice;
+        history.push_back(attemptSummary);
     }
     return false;
 }
