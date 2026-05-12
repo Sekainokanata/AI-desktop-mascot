@@ -1,10 +1,19 @@
 #include "PromptBuilder.h"
 
-std::string BuildMotionPrompt(const std::string& instruction, const std::vector<std::string>& boneNames)
+std::string BuildMotionPrompt(const std::string& instruction, const std::vector<std::string>& boneNames, const std::vector<std::string>& history)
 {
     std::string prompt;
     prompt += "You are generating MMD motion JSON. Output JSON only.\n";
     prompt += "Instruction: " + instruction + "\n";
+
+    // --- 追加：過去の失敗履歴がある場合は通知する ---
+    if (!history.empty()) {
+        prompt += "Previous Failed Attempts Analysis:\n";
+        for (size_t i = 0; i < history.size(); ++i) {
+            prompt += "- Attempt " + std::to_string(i + 1) + ": " + history[i] + "\n";
+        }
+        prompt += "Carefully analyze these failures. Modify the bone selection or rotation values [x,y,z,w] to correct the movement.\n";
+    }
     prompt += "Bones: ";
     for (size_t i = 0; i < boneNames.size(); ++i) {
         prompt += boneNames[i];

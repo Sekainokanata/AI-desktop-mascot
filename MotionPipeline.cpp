@@ -105,35 +105,41 @@ namespace
 bool RunMotionGeneration(const std::string& instruction,
     const std::string& endpointUrl,
     const std::string& modelName,
-    const std::string& outputVmdPath)
+    const std::string& outputVmdPath,
+    const std::vector<std::string>& history,
+    std::string& outGeneratedJson)
 {
     std::vector<std::string> boneNames = GetDefaultBoneNames();
     if (boneNames.empty()) {
         return false;
     }
 
-    std::string prompt = BuildMotionPrompt(instruction, boneNames);
-   LogText("LLM_PROMPT", prompt);
+    // 履歴を渡してプロンプト構築
+    std::string prompt = BuildMotionPrompt(instruction, boneNames, history);
+    LogText("LLM_PROMPT", prompt);
     std::string response = RequestMotionJson(endpointUrl, modelName, prompt);
     if (response.empty()) {
-       printf("[MotionPipeline] Empty response from LLM.\n");
+        printf("[MotionPipeline] Empty response from LLM.\n");
         return false;
     }
     LogText("LLM_RESPONSE", response);
 
     std::string json = ExtractJsonFromResponse(response);
     if (json.empty()) {
-       printf("[MotionPipeline] Motion JSON extraction failed.\n");
+        printf("[MotionPipeline] Motion JSON extraction failed.\n");
         return false;
     }
     LogText("MOTION_JSON", json);
+
+    // --- 追加：メインループ側で直前のJSONを参照できるように保存 ---
+    outGeneratedJson = json;
 
     MotionClip clip;
     if (!ParseMotionJson(json, clip)) {
        printf("[MotionPipeline] Motion JSON parse failed.\n");
         return false;
     }
-  ExpandMissingFrames(clip, boneNames);
+    ExpandMissingFrames(clip, boneNames);
     printf("[MotionPipeline] Parsed bones: %zu\n", clip.bones.size());
 
    bool written = WriteVmdFile(outputVmdPath, clip);

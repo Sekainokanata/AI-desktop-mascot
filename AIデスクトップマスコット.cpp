@@ -24,7 +24,7 @@ const char* kEndpointUrl = "http://localhost:1234/v1/chat/completions";
 const char* kModelName = "google/gemma-4-e4b";
 
 
-bool ParseEvaluationResponse(const std::string& response, bool& ok)
+bool ParseEvaluationResponse(const std::string& response, bool& ok, std::string& detectedMovement, std::string& advice)
 {
 	JsonValue root;
 	if (!ParseJson(response, root, nullptr) || !root.IsObject()) {
@@ -42,8 +42,17 @@ bool ParseEvaluationResponse(const std::string& response, bool& ok)
 					const JsonValue* okValue = result.Find("ok");
 					if (okValue && okValue->IsBool()) {
 						ok = okValue->boolean;
-						return true;
 					}
+					// --- 追加：分析文面とアドバイスを抽出 ---
+					const JsonValue* movementValue = result.Find("detected_movement");
+					if (movementValue && movementValue->IsString()) {
+						detectedMovement = movementValue->string;
+					}
+					const JsonValue* adviceValue = result.Find("advice");
+					if (adviceValue && adviceValue->IsString()) {
+						advice = adviceValue->string;
+					}
+					return true;
 				}
 			}
 		}
@@ -90,17 +99,22 @@ void mainsystem(int width, int height)
 		MV1SetMaterialOutLineDotWidth(ModelHandle, i, 0.001f);
 	}
 
-    int currentAnim = 0;
+	int currentAnim = 0;
 	int AttachIndex = -1;
 	float TotalTime = 0.0f;
 	float PlayTime = 0.0f;
-  int captureFrameCount = 0;
+	int captureFrameCount = 0;
 	int captureIndex = 0;
 	int feedbackIteration = 0;
 	std::string lastCapturePath;
 	float previousPlayTime = 0.0f;
 
-	if (!RunMotionGeneration(kInstruction, kEndpointUrl, kModelName, kMotionPath)) {
+	// --- 追加：履歴保存用ベクターと直前のJSON保存用文字列 ---
+	std::vector<std::string> feedbackHistory;
+	std::string lastGeneratedJson;
+
+	// 初回呼び出し時の引数変更
+	if (!RunMotionGeneration(kInstruction, kEndpointUrl, kModelName, kMotionPath, feedbackHistory, lastGeneratedJson)) {
 		MV1DeleteModel(ModelHandle);
 		return;
 	}
@@ -163,14 +177,27 @@ void mainsystem(int width, int height)
 		}
 
 		if (PlayTime < previousPlayTime && feedbackIteration < kMaxFeedbackIterations && !lastCapturePath.empty()) {
-			std::string response = RequestMotionEvaluationJson(kEndpointUrl, kModelName, kInstruction, lastCapturePath);
+			// 評価リクエスト送信時に直前のJSON情報を付与
+			std::string response = RequestMotionEvaluationJson(kEndpointUrl, kModelName, kInstruction, lastCapturePath, lastGeneratedJson);
+
 			bool ok = false;
-			if (ParseEvaluationResponse(response, ok) && ok) {
-				feedbackIteration = kMaxFeedbackIterations;
-			} else {
+			std::string detectedMovement;
+			std::string advice;
+
+			if (ParseEvaluationResponse(response, ok, detectedMovement, advice) && ok) {
+				feedbackIteration = kMaxFeedbackIterations; // 合格ならループ完了
+			}
+			else {
+				// --- 追加：不合格だった場合、動きの分析を履歴文字列としてストック ---
+				std::string historySummary = "Generated parameters resulted in: '" + detectedMovement + "'. Advice for correction: " + advice;
+				feedbackHistory.push_back(historySummary);
+				printf("[Feedback] Added history: %s\n", historySummary.c_str());
+
 				feedbackIteration++;
 				Sleep(kFeedbackDelaySeconds * 1000);
-				if (!RunMotionGeneration(kInstruction, kEndpointUrl, kModelName, kMotionPath)) {
+
+				// 次回生成時に蓄積された feedbackHistory を渡す
+				if (!RunMotionGeneration(kInstruction, kEndpointUrl, kModelName, kMotionPath, feedbackHistory, lastGeneratedJson)) {
 					break;
 				}
 				attachMotion(ModelHandle, currentAnim, AttachIndex, TotalTime, PlayTime);
