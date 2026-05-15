@@ -240,45 +240,33 @@ std::string RequestMotionJson(const std::string& endpointUrl, const std::string&
     return response;
 }
 
-std::string RequestMotionEvaluationJson(const std::string& endpointUrl, const std::string& modelName, const std::string& instruction, const std::string& imagePath, const std::string& lastGeneratedJson)
+std::string RequestMotionEvaluationJson(const std::string& endpointUrl, const std::string& modelName, const std::string& instruction, const std::vector<std::string>& imagePaths, const std::string& lastGeneratedJson)
 {
-    /*std::vector<unsigned char> imageBytes;
-    if (!ReadFileBytes(imagePath, imageBytes)) {
-        printf("[LlmClient] Failed to read image: %s\n", imagePath.c_str());
-        return {};
-    }
-    std::string imageData = Base64Encode(imageBytes);
-    std::string imageUrl = "data:" + GetImageMimeType(imagePath) + ";base64," + imageData;//[ERROR] [google/gemma-4-e4b] 'url' field must be a base64 encoded image 
-
-    //std::string prompt = "Instruction: " + instruction + "\nReturn JSON: {\"ok\":true/false,\"reason\":\"...\"} only.";
-
-    // 引数に現在のモーションJSON（文字列）を追加
-    std::string prompt = "指示: " + instruction + "\n"
-        "実行したモーションデータ: " + currentMotionJson + "\n" // これを追加
-        "画像を見て、指示通りの動きか判定してください。\n"
-        "返却形式: {\"ok\":true/false, \"analysis\":\"...\", \"advice\":\"...\"} のJSONのみ。";
-
-
-
-    std::string body = "{\"model\":\"" + EscapeJsonString(modelName) + "\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"" + EscapeJsonString(prompt) + "\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"" + EscapeJsonString(imageUrl) + "\"}}]}],\"temperature\":0.2}";
-    */
-    std::vector<unsigned char> imageBytes;
-    if (!ReadFileBytes(imagePath, imageBytes)) {
-        printf("[LlmClient] Failed to read image: %s\n", imagePath.c_str());
-        return {};
-    }
-    std::string imageData = Base64Encode(imageBytes);
-    std::string imageUrl = "data:" + GetImageMimeType(imagePath) + ";base64," + imageData;
-
-    // --- 修正：プロンプトに直前の生成データを含め、出力JSONスキーマを指定 ---
+    // プロンプトも「連続したコマ送り」であることを明記する形に少し調整
     std::string prompt = "指示: " + instruction + "\n"
         "直前に適用したモーションデータ: " + lastGeneratedJson + "\n"
-        "画像を見て、指示通りの動きか判定してください。\n"
+        "画像は一連のモーションのコマ送りです。これらを見て、指示通りの動きか判定してください。\n"
         "もし指示通りでない場合、上記のモーションデータでどのボーンを動かした結果、実際にはどのような動きになってしまっているかを分析してください。\n"
         "返却形式は必ず以下のJSON形式のみにしてください:\n"
         "{\"ok\":true/false, \"detected_movement\":\"(例: 頭のボーンを回転させたため、首を振る動作をした)\", \"advice\":\"(例: 腕のボーンの数値を変更してください)\"}";
 
-    std::string body = "{\"model\":\"" + EscapeJsonString(modelName) + "\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"" + EscapeJsonString(prompt) + "\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"" + EscapeJsonString(imageUrl) + "\"}}]}],\"temperature\":0.2}";
+    // content配列を構築（最初にテキスト、次に複数画像をループで追加）
+    std::string contentArray = "[{\"type\":\"text\",\"text\":\"" + EscapeJsonString(prompt) + "\"}";
+
+    for (const auto& imgPath : imagePaths) {
+        std::vector<unsigned char> imageBytes;
+        if (ReadFileBytes(imgPath, imageBytes)) {
+            std::string imageData = Base64Encode(imageBytes);
+            std::string imageUrl = "data:" + GetImageMimeType(imgPath) + ";base64," + imageData;
+            contentArray += ",{\"type\":\"image_url\",\"image_url\":{\"url\":\"" + EscapeJsonString(imageUrl) + "\"}}";
+        }
+        else {
+            printf("[LlmClient] Failed to read image: %s\n", imgPath.c_str());
+        }
+    }
+    contentArray += "]";
+
+    std::string body = "{\"model\":\"" + EscapeJsonString(modelName) + "\",\"messages\":[{\"role\":\"user\",\"content\":" + contentArray + "}],\"temperature\":0.2}";
     URL_COMPONENTS components = {};
     components.dwStructSize = sizeof(components);
     components.dwSchemeLength = static_cast<DWORD>(-1);

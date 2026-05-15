@@ -12,6 +12,7 @@
 #include "MotionPipeline.h"
 #include "LlmClient.h"
 #include "SimpleJson.h"
+#include "CaptureManager.h"
 
 #pragma comment(lib, "Shcore.lib")
 
@@ -176,34 +177,41 @@ void mainsystem(int width, int height)
 			break;
 		}
 
-		if (PlayTime < previousPlayTime && feedbackIteration < kMaxFeedbackIterations && !lastCapturePath.empty()) {
-			// 評価リクエスト送信時に直前のJSON情報を付与
-			std::string response = RequestMotionEvaluationJson(kEndpointUrl, kModelName, kInstruction, lastCapturePath, lastGeneratedJson);
+		if (PlayTime < previousPlayTime && feedbackIteration < kMaxFeedbackIterations) {
 
-			bool ok = false;
-			std::string detectedMovement;
-			std::string advice;
+			// --- 修正箇所 ---
+			// 1. キャプチャフォルダ内の全画像を時系列順に取得
+			std::vector<std::string> capturePaths = GetAllCapturePaths(kCaptureDir);
 
-			if (ParseEvaluationResponse(response, ok, detectedMovement, advice) && ok) {
-				feedbackIteration = kMaxFeedbackIterations; // 合格ならループ完了
-			}
-			else {
-				// --- 追加：不合格だった場合、動きの分析を履歴文字列としてストック ---
-				std::string historySummary = "Generated parameters resulted in: '" + detectedMovement + "'. Advice for correction: " + advice;
-				feedbackHistory.push_back(historySummary);
-				printf("[Feedback] Added history: %s\n", historySummary.c_str());
+			if (!capturePaths.empty()) {
+				// 2. 取得した全画像をAIに送信
+				std::string response = RequestMotionEvaluationJson(kEndpointUrl, kModelName, kInstruction, capturePaths, lastGeneratedJson);
 
-				feedbackIteration++;
-				Sleep(kFeedbackDelaySeconds * 1000);
-
-				// 次回生成時に蓄積された feedbackHistory を渡す
-				if (!RunMotionGeneration(kInstruction, kEndpointUrl, kModelName, kMotionPath, feedbackHistory, lastGeneratedJson)) {
-					break;
-				}
-				attachMotion(ModelHandle, currentAnim, AttachIndex, TotalTime, PlayTime);
-				captureFrameCount = 0;
+				// 3. AIに送信後、ローカルに保存されている画像を全て削除
+				DeleteCaptures(capturePaths);
+				captureFrameCount = 0; // フレームカウントやインデックスもリセットしておく
 				captureIndex = 0;
-				lastCapturePath.clear();
+
+				bool ok = false;
+				std::string detectedMovement;
+				std::string advice;
+
+				if (ParseEvaluationResponse(response, ok, detectedMovement, advice) && ok) {
+					feedbackIteration = kMaxFeedbackIterations; // 合格ならループ完了
+				}
+				else {
+					std::string historySummary = "Generated parameters resulted in: '" + detectedMovement + "'. Advice for correction: " + advice;
+					feedbackHistory.push_back(historySummary);
+					printf("[Feedback] Added history: %s\n", historySummary.c_str());
+
+					feedbackIteration++;
+					Sleep(kFeedbackDelaySeconds * 1000);
+
+					if (!RunMotionGeneration(kInstruction, kEndpointUrl, kModelName, kMotionPath, feedbackHistory, lastGeneratedJson)) {
+						break;
+					}
+					attachMotion(ModelHandle, currentAnim, AttachIndex, TotalTime, PlayTime);
+				}
 			}
 		}
 	}

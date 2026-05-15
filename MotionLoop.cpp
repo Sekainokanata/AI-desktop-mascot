@@ -7,7 +7,7 @@
 
 #include <windows.h>
 #include <string>
-#include <vector> // ← vector を追加
+#include <vector> 
 
 namespace
 {
@@ -66,16 +66,17 @@ bool RunMotionFeedbackLoop(const std::string& instruction,
             return false;
         }
         Sleep(delaySeconds * 1000);
-        std::string latestCapture = GetLatestCapturePath(captureDir);
-        if (latestCapture.empty()) {
+
+        std::vector<std::string> capturePaths = GetAllCapturePaths(captureDir);
+        if (capturePaths.empty()) {
             return false;
         }
 
-        // 評価時にも lastGeneratedJson を引き渡す
-        std::string response = RequestMotionEvaluationJson(endpointUrl, modelName, instruction, latestCapture, lastGeneratedJson);
-        if (response.empty()) {
-            return false;
-        }
+        // 評価リクエスト（配列をそのまま渡す）
+        std::string response = RequestMotionEvaluationJson(endpointUrl, modelName, instruction, capturePaths, lastGeneratedJson);
+
+        // 評価し終わった画像群はここで削除しておく
+        DeleteCaptures(capturePaths);
 
         bool ok = false;
         std::string detectedMovement;
