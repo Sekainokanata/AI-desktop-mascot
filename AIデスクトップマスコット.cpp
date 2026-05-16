@@ -79,6 +79,7 @@ void DebugInputThread() {
 
 		// VMD書き出し用にUTF-8へ変換
 		std::string boneNameUtf8 = SystemToUtf8(boneNameSjis);
+		//std::string boneNameUtf8 = boneNameSjis; // ★ VMD生成関数側でShift-JISを想定しているため、ここでは変換せずに渡す
 
 		// スレッドセーフにデータをメインスレッドへ渡す
 		std::lock_guard<std::mutex> lock(g_debugMutex);
@@ -200,20 +201,25 @@ void mainsystem(int width, int height)
 		printf("=========================================\n");
 		printf(" Debug Mode ON\n");
 		printf(" コンソールからボーン名と回転を入力できます。\n");
+		printf(" 初期状態ではアニメーションは停止しています。\n");
 		printf("=========================================\n");
 
 		// 入力スレッドをバックグラウンドで開始
 		std::thread inputThread(DebugInputThread);
 		inputThread.detach();
+
+		// ★ ここでは attachMotion を呼ばない（停止したままにする）
 	}
 	else {
 		if (!RunMotionGeneration(kInstruction, kEndpointUrl, kModelName, kMotionPath, feedbackHistory, lastGeneratedJson)) {
 			MV1DeleteModel(ModelHandle);
 			return;
 		}
-	}
 
-	attachMotion(ModelHandle, currentAnim, AttachIndex, TotalTime, PlayTime);
+		// ★ 通常モードの場合は初回からアニメーションを読み込む
+		attachMotion(ModelHandle, currentAnim, AttachIndex, TotalTime, PlayTime);
+	}
+	//attachMotion(ModelHandle, currentAnim, AttachIndex, TotalTime, PlayTime);
 
 	const char* vmdPath = kMotionPath;
 	ULONGLONG lastWriteTime = 0;
@@ -247,6 +253,7 @@ void mainsystem(int width, int height)
 			if (!hasWriteTime || currentWriteTime != lastWriteTime) {
 				lastWriteTime = currentWriteTime;
 				hasWriteTime = true;
+				// ★ コンソール入力でVMDファイルが上書き生成された瞬間、ここでアタッチされて動き出す
 				attachMotion(ModelHandle, currentAnim, AttachIndex, TotalTime, PlayTime);
 			}
 		}
@@ -254,7 +261,7 @@ void mainsystem(int width, int height)
 		ClearDrawScreen();
 
 		previousPlayTime = PlayTime;
-		Model_animation(PlayTime, TotalTime, ModelHandle, AttachIndex);
+		Model_animation(PlayTime, TotalTime, ModelHandle, AttachIndex, kDebugMode);
 
 		MV1DrawModel(ModelHandle);
 
