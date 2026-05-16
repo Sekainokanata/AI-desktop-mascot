@@ -20,7 +20,7 @@ const char* kMotionPath = "C:/Users/r-tom/Desktop/AIデスクトップマスコ�
 const char* kCaptureDir = "C:/Users/r-tom/Desktop/AIデスクトップマスコット/captures";
 const int kMaxFeedbackIterations = 10;
 const int kFeedbackDelaySeconds = 3;
-const char* kInstruction = "手を振る";
+const char* kInstruction = "右腕のみを上にあげる";
 const char* kEndpointUrl = "http://localhost:1234/v1/chat/completions";
 const char* kModelName = "google/gemma-4-e4b";
 
