@@ -7,14 +7,26 @@
 #include <Windows.h>
 #include <shellscalingapi.h>
 
+#include <thread>
+#include <mutex>
+#include <sstream>
+
 #include "マスコット表示前処理.h"
 #include "Animation.h"
 #include "MotionPipeline.h"
 #include "LlmClient.h"
 #include "SimpleJson.h"
 #include "CaptureManager.h"
+#include "MotionSchema.h" // 追加: デバッグ用VMD生成に必要
+#include "JsonToVmd.h"    // 追加: デバッグ用VMD生成に必要
 
 #pragma comment(lib, "Shcore.lib")
+
+// ==========================================
+// デバッグモードの切り替えフラグ
+// true: ユーザー手動入力モード, false: LLM自動生成モード
+const bool kDebugMode = true;
+// ==========================================
 
 const char* kMotionPath = "C:/Users/r-tom/Desktop/AIデスクトップマスコット/Sour式初音ミクVer.1.02/Black000.vmd";
 const char* kCaptureDir = "C:/Users/r-tom/Desktop/AIデスクトップマスコット/captures";
@@ -24,6 +36,87 @@ const char* kInstruction = "右腕のみを上にあげる";
 const char* kEndpointUrl = "http://localhost:1234/v1/chat/completions";
 const char* kModelName = "google/gemma-4-e4b";
 
+
+// --- デバッグ用の入力共有データ ---
+struct DebugInputData {
+	std::string boneName;
+	float rot[4];
+	bool hasNewData = false;
+};
+DebugInputData g_debugData;
+std::mutex g_debugMutex;
+
+// Shift-JIS(コンソール入力)をUTF-8に変換する関数
+std::string SystemToUtf8(const std::string& value) {
+	if (value.empty()) return {};
+	int wideSize = MultiByteToWideChar(CP_ACP, 0, value.c_str(), static_cast<int>(value.size()), nullptr, 0);
+	std::wstring wide(wideSize, L'\0');
+	MultiByteToWideChar(CP_ACP, 0, value.c_str(), static_cast<int>(value.size()), wide.data(), wideSize);
+	int utf8Size = WideCharToMultiByte(CP_UTF8, 0, wide.data(), wideSize, nullptr, 0, nullptr, nullptr);
+	std::string utf8(utf8Size, '\0');
+	WideCharToMultiByte(CP_UTF8, 0, wide.data(), wideSize, utf8.data(), utf8Size, nullptr, nullptr);
+	return utf8;
+}
+
+// デバッグ用入力スレッド
+void DebugInputThread() {
+	while (true) {
+		std::string boneNameSjis;
+		std::cout << "\n[Debug] 動かしたいボーン名を入力してください (例: 右腕): ";
+		if (!(std::cin >> boneNameSjis)) break;
+
+		std::string rotStr;
+		std::cout << "[Debug] 回転(x,y,z,w)をカンマ区切りで入力 (例: 0,0,0,1): ";
+		if (!(std::cin >> rotStr)) break;
+
+		// カンマをスペースに置換してパースしやすくする
+		for (char& c : rotStr) {
+			if (c == ',') c = ' ';
+		}
+		float x = 0.0f, y = 0.0f, z = 0.0f, w = 1.0f;
+		std::stringstream ss(rotStr);
+		ss >> x >> y >> z >> w;
+
+		// VMD書き出し用にUTF-8へ変換
+		std::string boneNameUtf8 = SystemToUtf8(boneNameSjis);
+
+		// スレッドセーフにデータをメインスレッドへ渡す
+		std::lock_guard<std::mutex> lock(g_debugMutex);
+		g_debugData.boneName = boneNameUtf8;
+		g_debugData.rot[0] = x;
+		g_debugData.rot[1] = y;
+		g_debugData.rot[2] = z;
+		g_debugData.rot[3] = w;
+		g_debugData.hasNewData = true;
+	}
+}
+
+// デバッグ用のVMDファイル直接生成関数
+void CreateDebugVmd(const std::string& vmdPath, const std::string& boneName, const float rot[4]) {
+	MotionClip clip;
+	clip.fps = 30;
+	clip.duration = 30;
+	clip.modelName = "Sour_Miku_Black";
+
+	MotionBone bone;
+	bone.name = boneName;
+
+	// 0フレーム目と30フレーム目に同じ回転を登録（静止ポーズ）
+	MotionFrame frame0;
+	frame0.frame = 0;
+	frame0.rot[0] = rot[0]; frame0.rot[1] = rot[1]; frame0.rot[2] = rot[2]; frame0.rot[3] = rot[3];
+	bone.frames.push_back(frame0);
+
+	MotionFrame frame30;
+	frame30.frame = 30;
+	frame30.rot[0] = rot[0]; frame30.rot[1] = rot[1]; frame30.rot[2] = rot[2]; frame30.rot[3] = rot[3];
+	bone.frames.push_back(frame30);
+
+	clip.bones.push_back(bone);
+	WriteVmdFile(vmdPath, clip);
+	printf("\n[Debug] ボーン [%s] のモーションを VMD に書き出しました。\n", boneName.c_str());
+}
+// ------------------------------------------
 
 bool ParseEvaluationResponse(const std::string& response, bool& ok, std::string& detectedMovement, std::string& advice)
 {
@@ -44,7 +137,6 @@ bool ParseEvaluationResponse(const std::string& response, bool& ok, std::string&
 					if (okValue && okValue->IsBool()) {
 						ok = okValue->boolean;
 					}
-					// --- 追加：分析文面とアドバイスを抽出 ---
 					const JsonValue* movementValue = result.Find("detected_movement");
 					if (movementValue && movementValue->IsString()) {
 						detectedMovement = movementValue->string;
@@ -61,7 +153,6 @@ bool ParseEvaluationResponse(const std::string& response, bool& ok, std::string&
 	return false;
 }
 
-
 bool tryGetFileWriteTime(const char* path, ULONGLONG& writeTime)
 {
 	WIN32_FILE_ATTRIBUTE_DATA data;
@@ -72,28 +163,19 @@ bool tryGetFileWriteTime(const char* path, ULONGLONG& writeTime)
 	return true;
 }
 
-
-
 void mainsystem(int width, int height)
 {
-  // MMDモデルを読み込む
-	// ※同じフォルダに「Black000L.vmd」があるため、この1行だけでモーションも完璧にロードされます
 	char modelPath[] = "C:/Users/r-tom/Desktop/AIデスクトップマスコット/Sour式初音ミクVer.1.02/Black.pmx";
 	const char* capturePathFormat = "C:/Users/r-tom/Desktop/AIデスクトップマスコット/captures/mascot_%05d.jpg";
 	CreateDirectoryA(kCaptureDir, nullptr);
 
 	int ModelHandle = MV1LoadModel(modelPath);
-	if (ModelHandle == -1) {
-		return;
-	}
+	if (ModelHandle == -1) return;
 
 	MV1SetScale(ModelHandle, VGet(40.0f, 40.0f, 40.0f));
 	MV1SetPosition(ModelHandle, VGet(width - 300.0f, 3.0f, 0.0f));
-
-	// モデルをY軸回転させて正面を向かせる
 	MV1SetRotationXYZ(ModelHandle, VGet(0.0f, 0.6f, 0.0f));
 
-	// 外線（エッジ）の太さを細くする
 	int materialNum = MV1GetMaterialNum(ModelHandle);
 	for (int i = 0; i < materialNum; i++)
 	{
@@ -110,24 +192,57 @@ void mainsystem(int width, int height)
 	std::string lastCapturePath;
 	float previousPlayTime = 0.0f;
 
-	// --- 追加：履歴保存用ベクターと直前のJSON保存用文字列 ---
 	std::vector<std::string> feedbackHistory;
 	std::string lastGeneratedJson;
 
-	// 初回呼び出し時の引数変更
-	if (!RunMotionGeneration(kInstruction, kEndpointUrl, kModelName, kMotionPath, feedbackHistory, lastGeneratedJson)) {
-		MV1DeleteModel(ModelHandle);
-		return;
+	// === デバッグモード分岐 ===
+	if (kDebugMode) {
+		printf("=========================================\n");
+		printf(" Debug Mode ON\n");
+		printf(" コンソールからボーン名と回転を入力できます。\n");
+		printf("=========================================\n");
+
+		// 入力スレッドをバックグラウンドで開始
+		std::thread inputThread(DebugInputThread);
+		inputThread.detach();
 	}
+	else {
+		if (!RunMotionGeneration(kInstruction, kEndpointUrl, kModelName, kMotionPath, feedbackHistory, lastGeneratedJson)) {
+			MV1DeleteModel(ModelHandle);
+			return;
+		}
+	}
+
 	attachMotion(ModelHandle, currentAnim, AttachIndex, TotalTime, PlayTime);
 
-   const char* vmdPath = kMotionPath;
+	const char* vmdPath = kMotionPath;
 	ULONGLONG lastWriteTime = 0;
 	bool hasWriteTime = tryGetFileWriteTime(vmdPath, lastWriteTime);
 
 	while (ProcessMessage() == 0)
 	{
-        ULONGLONG currentWriteTime = 0;
+		// === デバッグモード: 新しい入力があればVMDを更新 ===
+		if (kDebugMode) {
+			bool hasNew = false;
+			std::string bName;
+			float bRot[4];
+			{
+				std::lock_guard<std::mutex> lock(g_debugMutex);
+				if (g_debugData.hasNewData) {
+					bName = g_debugData.boneName;
+					for (int i = 0; i < 4; ++i) bRot[i] = g_debugData.rot[i];
+					g_debugData.hasNewData = false;
+					hasNew = true;
+				}
+			}
+			if (hasNew) {
+				// 入力値をもとに一時的なVMDを生成して上書き保存
+				CreateDebugVmd(kMotionPath, bName, bRot);
+			}
+		}
+
+		// ファイルのタイムスタンプ監視により、VMD更新を検知して自動アタッチ
+		ULONGLONG currentWriteTime = 0;
 		if (tryGetFileWriteTime(vmdPath, currentWriteTime)) {
 			if (!hasWriteTime || currentWriteTime != lastWriteTime) {
 				lastWriteTime = currentWriteTime;
@@ -136,20 +251,13 @@ void mainsystem(int width, int height)
 			}
 		}
 
-      ClearDrawScreen();
+		ClearDrawScreen();
 
 		previousPlayTime = PlayTime;
 		Model_animation(PlayTime, TotalTime, ModelHandle, AttachIndex);
 
 		MV1DrawModel(ModelHandle);
 
-		/*if (captureFrameCount % 30 == 0) {
-			char capturePath[MAX_PATH] = {};
-			sprintf_s(capturePath, capturePathFormat, captureIndex);
-			SaveDrawScreen(0, 0, width, height, capturePath);
-			lastCapturePath = capturePath;
-			captureIndex++;
-		}*/
 		if (captureFrameCount % 30 == 0) {
 			char capturePath[MAX_PATH] = {};
 			sprintf_s(capturePath, capturePathFormat, captureIndex);
@@ -162,8 +270,6 @@ void mainsystem(int width, int height)
 			if (cropX1 < 0) cropX1 = 0;
 			if (cropY1 < 0) cropY1 = 0;
 
-			// --- 修正：確実にJPEG圧縮して保存する ---
-			// 最後の引数(品質)は 80 前後を指定してファイルサイズを抑えます
 			SaveDrawScreenToJPEG(cropX1, cropY1, cropX2, cropY2, capturePath, 80);
 
 			lastCapturePath = capturePath;
@@ -177,40 +283,37 @@ void mainsystem(int width, int height)
 			break;
 		}
 
-		if (PlayTime < previousPlayTime && feedbackIteration < kMaxFeedbackIterations) {
+		// === AIフィードバックループ（デバッグモード時はスキップ） ===
+		if (!kDebugMode) {
+			if (PlayTime < previousPlayTime && feedbackIteration < kMaxFeedbackIterations) {
+				std::vector<std::string> capturePaths = GetAllCapturePaths(kCaptureDir);
 
-			// --- 修正箇所 ---
-			// 1. キャプチャフォルダ内の全画像を時系列順に取得
-			std::vector<std::string> capturePaths = GetAllCapturePaths(kCaptureDir);
+				if (!capturePaths.empty()) {
+					std::string response = RequestMotionEvaluationJson(kEndpointUrl, kModelName, kInstruction, capturePaths, lastGeneratedJson);
+					DeleteCaptures(capturePaths);
+					captureFrameCount = 0;
+					captureIndex = 0;
 
-			if (!capturePaths.empty()) {
-				// 2. 取得した全画像をAIに送信
-				std::string response = RequestMotionEvaluationJson(kEndpointUrl, kModelName, kInstruction, capturePaths, lastGeneratedJson);
+					bool ok = false;
+					std::string detectedMovement;
+					std::string advice;
 
-				// 3. AIに送信後、ローカルに保存されている画像を全て削除
-				DeleteCaptures(capturePaths);
-				captureFrameCount = 0; // フレームカウントやインデックスもリセットしておく
-				captureIndex = 0;
-
-				bool ok = false;
-				std::string detectedMovement;
-				std::string advice;
-
-				if (ParseEvaluationResponse(response, ok, detectedMovement, advice) && ok) {
-					feedbackIteration = kMaxFeedbackIterations; // 合格ならループ完了
-				}
-				else {
-					std::string historySummary = "Generated parameters resulted in: '" + detectedMovement + "'. Advice for correction: " + advice;
-					feedbackHistory.push_back(historySummary);
-					printf("[Feedback] Added history: %s\n", historySummary.c_str());
-
-					feedbackIteration++;
-					Sleep(kFeedbackDelaySeconds * 1000);
-
-					if (!RunMotionGeneration(kInstruction, kEndpointUrl, kModelName, kMotionPath, feedbackHistory, lastGeneratedJson)) {
-						break;
+					if (ParseEvaluationResponse(response, ok, detectedMovement, advice) && ok) {
+						feedbackIteration = kMaxFeedbackIterations;
 					}
-					attachMotion(ModelHandle, currentAnim, AttachIndex, TotalTime, PlayTime);
+					else {
+						std::string historySummary = "Generated parameters resulted in: '" + detectedMovement + "'. Advice for correction: " + advice;
+						feedbackHistory.push_back(historySummary);
+						printf("[Feedback] Added history: %s\n", historySummary.c_str());
+
+						feedbackIteration++;
+						Sleep(kFeedbackDelaySeconds * 1000);
+
+						if (!RunMotionGeneration(kInstruction, kEndpointUrl, kModelName, kMotionPath, feedbackHistory, lastGeneratedJson)) {
+							break;
+						}
+						attachMotion(ModelHandle, currentAnim, AttachIndex, TotalTime, PlayTime);
+					}
 				}
 			}
 		}
@@ -222,11 +325,13 @@ void mainsystem(int width, int height)
 
 int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR lpCmdLine, _In_ int nCmdShow)
 {
-	// コンソール有効化
 	AllocConsole();
 	FILE* pFile = nullptr;
 	freopen_s(&pFile, "CONOUT$", "w", stdout);
 	freopen_s(&pFile, "CONOUT$", "w", stderr);
+
+	// 追加: コンソールの入力を受け付けるために stdin を割り当てる
+	freopen_s(&pFile, "CONIN$", "r", stdin);
 
 	int width = 0;
 	int height = 0;
