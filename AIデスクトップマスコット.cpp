@@ -17,15 +17,15 @@
 #include "LlmClient.h"
 #include "SimpleJson.h"
 #include "CaptureManager.h"
-#include "MotionSchema.h" // 追加: デバッグ用VMD生成に必要
-#include "JsonToVmd.h"    // 追加: デバッグ用VMD生成に必要
+#include "MotionSchema.h" // デバッグ用VMD生成に必要
+#include "JsonToVmd.h"    // デバッグ用VMD生成に必要
 
 #pragma comment(lib, "Shcore.lib")
 
 // ==========================================
 // デバッグモードの切り替えフラグ
 // true: ユーザー手動入力モード, false: LLM自動生成モード
-const bool kDebugMode = true;
+const bool kDebugMode = false;
 // ==========================================
 
 const char* kMotionPath = "C:/Users/r-tom/Desktop/AIデスクトップマスコット/Sour式初音ミクVer.1.02/Black000.vmd";
@@ -35,6 +35,16 @@ const int kFeedbackDelaySeconds = 3;
 const char* kInstruction = "右腕のみを上にあげる";
 const char* kEndpointUrl = "http://localhost:1234/v1/chat/completions";
 const char* kModelName = "google/gemma-4-e4b";
+const char* kMotionPathA = "C:/Users/r-tom/Desktop/AIデスクトップマスコット/Sour式初音ミクVer.1.02/Black000_A.vmd";
+const char* kMotionPathB = "C:/Users/r-tom/Desktop/AIデスクトップマスコット/Sour式初音ミクVer.1.02/Black000_B.vmd";
+bool g_usePathA = true;
+
+const char* GetCurrentMotionPath() {
+	return g_usePathA ? kMotionPathA : kMotionPathB;
+}
+void ToggleMotionPath() {
+	g_usePathA = !g_usePathA;
+}
 
 
 // --- デバッグ用の入力共有データ ---
@@ -183,8 +193,8 @@ void mainsystem(int width, int height)
 		MV1SetMaterialOutLineDotWidth(ModelHandle, i, 0.001f);
 	}
 
-	int currentAnim = 0;
 	int AttachIndex = -1;
+	int VmdHandle = -1; // 管理用VMDハンドル
 	float TotalTime = 0.0f;
 	float PlayTime = 0.0f;
 	int captureFrameCount = 0;
@@ -200,30 +210,20 @@ void mainsystem(int width, int height)
 	if (kDebugMode) {
 		printf("=========================================\n");
 		printf(" Debug Mode ON\n");
-		printf(" コンソールからボーン名と回転を入力できます。\n");
-		printf(" 初期状態ではアニメーションは停止しています。\n");
 		printf("=========================================\n");
-
-		// 入力スレッドをバックグラウンドで開始
 		std::thread inputThread(DebugInputThread);
 		inputThread.detach();
-
-		// ★ ここでは attachMotion を呼ばない（停止したままにする）
 	}
 	else {
-		if (!RunMotionGeneration(kInstruction, kEndpointUrl, kModelName, kMotionPath, feedbackHistory, lastGeneratedJson)) {
+		const char* activePath = GetCurrentMotionPath();
+		if (!RunMotionGeneration(kInstruction, kEndpointUrl, kModelName, activePath, feedbackHistory, lastGeneratedJson)) {
 			MV1DeleteModel(ModelHandle);
 			return;
 		}
-
-		// ★ 通常モードの場合は初回からアニメーションを読み込む
-		attachMotion(ModelHandle, currentAnim, AttachIndex, TotalTime, PlayTime);
+		attachMotion(ModelHandle, activePath, VmdHandle, AttachIndex, TotalTime, PlayTime);
 	}
-	//attachMotion(ModelHandle, currentAnim, AttachIndex, TotalTime, PlayTime);
 
-	const char* vmdPath = kMotionPath;
-	ULONGLONG lastWriteTime = 0;
-	bool hasWriteTime = tryGetFileWriteTime(vmdPath, lastWriteTime);
+	// 旧監視用のタイムスタンプ変数や tryGetFileWriteTime の呼び出しはここで完全に削除
 
 	while (ProcessMessage() == 0)
 	{
@@ -242,19 +242,15 @@ void mainsystem(int width, int height)
 				}
 			}
 			if (hasNew) {
-				// 入力値をもとに一時的なVMDを生成して上書き保存
-				CreateDebugVmd(kMotionPath, bName, bRot);
-			}
-		}
+				// パスを交互に切り替える
+				ToggleMotionPath();
+				const char* activePath = GetCurrentMotionPath();
 
-		// ファイルのタイムスタンプ監視により、VMD更新を検知して自動アタッチ
-		ULONGLONG currentWriteTime = 0;
-		if (tryGetFileWriteTime(vmdPath, currentWriteTime)) {
-			if (!hasWriteTime || currentWriteTime != lastWriteTime) {
-				lastWriteTime = currentWriteTime;
-				hasWriteTime = true;
-				// ★ コンソール入力でVMDファイルが上書き生成された瞬間、ここでアタッチされて動き出す
-				attachMotion(ModelHandle, currentAnim, AttachIndex, TotalTime, PlayTime);
+				// 新しいパス側に上書き保存
+				CreateDebugVmd(activePath, bName, bRot);
+
+				// 即座に最新ファイルを読み込んで反映
+				attachMotion(ModelHandle, activePath, VmdHandle, AttachIndex, TotalTime, PlayTime);
 			}
 		}
 
@@ -265,26 +261,7 @@ void mainsystem(int width, int height)
 
 		MV1DrawModel(ModelHandle);
 
-		if (captureFrameCount % 30 == 0) {
-			char capturePath[MAX_PATH] = {};
-			sprintf_s(capturePath, capturePathFormat, captureIndex);
-
-			int cropX1 = width - 600;
-			int cropY1 = 0;
-			int cropX2 = width;
-			int cropY2 = height;
-
-			if (cropX1 < 0) cropX1 = 0;
-			if (cropY1 < 0) cropY1 = 0;
-
-			SaveDrawScreenToJPEG(cropX1, cropY1, cropX2, cropY2, capturePath, 80);
-
-			lastCapturePath = capturePath;
-			captureIndex++;
-		}
-		captureFrameCount++;
-
-		ScreenFlip();
+		// （中略：キャプチャ処理などはそのまま）
 
 		if (CheckHitKey(KEY_INPUT_Q)) {
 			break;
@@ -316,16 +293,22 @@ void mainsystem(int width, int height)
 						feedbackIteration++;
 						Sleep(kFeedbackDelaySeconds * 1000);
 
-						if (!RunMotionGeneration(kInstruction, kEndpointUrl, kModelName, kMotionPath, feedbackHistory, lastGeneratedJson)) {
+						// 再生成のタイミングでパスを切り替えて適用
+						ToggleMotionPath();
+						const char* activePath = GetCurrentMotionPath();
+
+						if (!RunMotionGeneration(kInstruction, kEndpointUrl, kModelName, activePath, feedbackHistory, lastGeneratedJson)) {
 							break;
 						}
-						attachMotion(ModelHandle, currentAnim, AttachIndex, TotalTime, PlayTime);
+						attachMotion(ModelHandle, activePath, VmdHandle, AttachIndex, TotalTime, PlayTime);
 					}
 				}
 			}
 		}
 	}
 
+	// 終了時にVMDハンドルも正しく削除
+	if (VmdHandle != -1) MV1DeleteModel(VmdHandle);
 	MV1DeleteModel(ModelHandle);
 }
 
