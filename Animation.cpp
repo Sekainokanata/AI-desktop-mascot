@@ -2,39 +2,38 @@
 #include "DxLib.h"
 #include "Animation.h"
 
+// 引数を VmdHandle に戻す
 void attachMotion(int ModelHandle, const char* vmdPath, int& VmdHandle, int& AttachIndex, float& TotalTime, float& PlayTime)
 {
-	// 1. 既にアタッチされている場合は安全にデタッチ
+	// 古いアニメーションをモデルからデタッチ
 	if (AttachIndex != -1) {
 		MV1DetachAnim(ModelHandle, AttachIndex);
 		AttachIndex = -1;
 	}
 
-	// 2. 以前にロードしたVMDデータ（DxLibではモデル扱い）をメモリから完全に解放
+	// 古いVMDデータ（モーション）だけをメモリから削除
 	if (VmdHandle != -1) {
 		MV1DeleteModel(VmdHandle);
 		VmdHandle = -1;
 	}
 
-	// 3. ディスク上の最新VMDファイルを新しく読み込む
+	// 新しいVMDデータだけをロード
 	VmdHandle = MV1LoadModel(vmdPath);
 	if (VmdHandle == -1) {
-		printf("Error: アニメーション(VMD)の読み込みに失敗しました: %s\n", vmdPath);
+		printf("Error: VMDのロードに失敗しました: %s\n", vmdPath);
 		return;
 	}
 
-	// 4. MV1AttachAnim の第3引数に VmdHandle を渡してアタッチする
+	// 第3引数に VmdHandle を指定してアタッチ（※ボーン名がShift-JISで一致していれば必ず成功します）
 	AttachIndex = MV1AttachAnim(ModelHandle, 0, VmdHandle);
-	if (AttachIndex == -1) {
-		printf("Error: アニメーションのアタッチに失敗しました\n");
-		return;
+	if (AttachIndex != -1) {
+		MV1SetAttachAnimBlendRate(ModelHandle, AttachIndex, 1.0f);
+		TotalTime = MV1GetAttachAnimTotalTime(ModelHandle, AttachIndex);
 	}
-
-	MV1SetAttachAnimBlendRate(ModelHandle, AttachIndex, 1.0f);
-	TotalTime = MV1GetAttachAnimTotalTime(ModelHandle, AttachIndex);
 	PlayTime = 0.0f;
 }
 
+// （Model_animation 関数はそのまま変更なし）
 void Model_animation(float& PlayTime, float TotalTime, int ModelHandle, int AttachIndex, bool isDebugMode)
 {
 	if (AttachIndex == -1) return;
