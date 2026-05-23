@@ -25,7 +25,7 @@
 // ==========================================
 // デバッグモードの切り替えフラグ
 // true: ユーザー手動入力モード, false: LLM自動生成モード
-const bool kDebugMode = false;
+const bool kDebugMode = true;
 // ==========================================
 
 const char* kMotionPath = "C:/Users/r-tom/Desktop/AIデスクトップマスコット/Sour式初音ミクVer.1.02/Black000.vmd";
@@ -294,6 +294,8 @@ void mainsystem(int width, int height)
 			captureIndex++;
 		}
 		captureFrameCount++;
+
+		ScreenFlip();
 
 		if (CheckHitKey(KEY_INPUT_Q)) {
 			break;
